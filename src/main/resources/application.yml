@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: zorth-ssh-backend
+  datasource:
+    url: jdbc:mysql://${MySQL_DB_URL}:${MySQL_DB_PORT}/zorth_ssh?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC
+    username: ${MySQL_DB_USERNAME}
+    password: ${MySQL_DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.MySQL8Dialect
+
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+# 简单的口令验证
+app:
+  access-password: ${ACCESS_PASSWORD:zorth}
+
+frontend:
+  url: http://localhost:3000
+
+logging:
+  level:
+    com.zorth.ssh: DEBUG 
