@@ -30,8 +30,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     @Override
     public void registerStompEndpoints(@NonNull StompEndpointRegistry registry) {
         registry.addEndpoint("/ws")
-                .setAllowedOriginPatterns("*")  // Allow all origins for development
+                .setAllowedOriginPatterns(frontendUrl, "http://localhost:3000", "http://127.0.0.1:3000")
                 .withSockJS()
                 .setSessionCookieNeeded(false);
+        log.info("WebSocket endpoint registered at /ws with allowed origins: {}", frontendUrl);
     }
 } 

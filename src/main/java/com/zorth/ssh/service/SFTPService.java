@@ -112,31 +112,27 @@ public class SFTPService {
     
     /**
      * Uploads a file to the target server via SFTP with progress tracking
-     * Returns the transfer ID for progress tracking
+     * Uses the provided transferId for progress tracking
      */
-    public String uploadFileWithProgress(String sessionId, String remotePath, InputStream inputStream, long fileSize) 
+    public void uploadFileWithProgress(String sessionId, String remotePath, InputStream inputStream, long fileSize, String transferId)
             throws SftpException {
         ChannelSftp sftpChannel = sessionManager.getChannel(sessionId);
         String fileName = getFileName(remotePath);
-        String transferId = UUID.randomUUID().toString();
-        
         try {
-            // Start progress tracking
+            // Start progress tracking (should already be started by prepare-upload, but safe to call)
             progressTracker.startTransfer(transferId, fileName, "UPLOAD", fileSize);
-            
+
             log.info("Uploading file to: {} (size: {} bytes)", remotePath, fileSize);
-            
+
             // Wrap input stream with progress tracking
-            ProgressTrackingInputStream progressInputStream = 
+            ProgressTrackingInputStream progressInputStream =
                     new ProgressTrackingInputStream(inputStream, progressTracker, transferId);
-            
+
             sftpChannel.put(progressInputStream, remotePath);
-            
+
             progressTracker.completeTransfer(transferId);
             log.info("Successfully uploaded file to: {}", remotePath);
-            
-            return transferId;
-            
+
         } catch (Exception e) {
             progressTracker.failTransfer(transferId, e.getMessage());
             throw e;
@@ -149,7 +145,7 @@ public class SFTPService {
     public void uploadFile(String sessionId, String remotePath, InputStream inputStream) 
             throws SftpException {
         // For legacy calls, we don't have file size info, so we'll use -1
-        uploadFileWithProgress(sessionId, remotePath, inputStream, -1);
+        uploadFileWithProgress(sessionId, remotePath, inputStream, -1, null);
     }
     
     /**

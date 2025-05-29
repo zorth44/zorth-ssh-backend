@@ -28,6 +28,8 @@ public class TransferProgressWebSocketController {
         // Return current progress if available
         TransferProgress currentProgress = progressTracker.getProgress(transferId);
         if (currentProgress != null) {
+            log.debug("Returning current progress for transfer {}: {} bytes transferred, {}% complete", 
+                transferId, currentProgress.getTransferredBytes(), currentProgress.getPercentage());
             return currentProgress;
         }
         
@@ -36,6 +38,7 @@ public class TransferProgressWebSocketController {
         notFound.setSessionId(transferId);
         notFound.setStatus(TransferProgress.TransferStatus.STARTING);
         notFound.setPercentage(0.0);
+        log.debug("No progress found for transfer {}, returning initial state", transferId);
         return notFound;
     }
     
@@ -50,6 +53,8 @@ public class TransferProgressWebSocketController {
         
         TransferProgress progress = progressTracker.getProgress(transferId);
         if (progress != null) {
+            log.debug("Returning status for transfer {}: {} bytes transferred, {}% complete, status: {}", 
+                transferId, progress.getTransferredBytes(), progress.getPercentage(), progress.getStatus());
             return progress;
         }
         
@@ -58,6 +63,7 @@ public class TransferProgressWebSocketController {
         notFound.setSessionId(transferId);
         notFound.setStatus(TransferProgress.TransferStatus.FAILED);
         notFound.setErrorMessage("Transfer not found");
+        log.debug("Transfer {} not found, returning error status", transferId);
         return notFound;
     }
 } 

@@ -75,33 +75,66 @@ public class SFTPController {
      * Download a file from the remote server with progress tracking
      */
     @GetMapping("/{profileId}/download")
-    public ResponseEntity<?> downloadFile(
+    public ResponseEntity<StreamingResponseBody> downloadFile(
             @PathVariable Long profileId,
             @RequestParam String path) {
         try {
             String sessionId = sftpService.connect(profileId);
             String fileName = path.substring(path.lastIndexOf('/') + 1);
             
+            // Create a wrapper for the output stream to capture the transfer ID
+            class TransferIdCapture {
+                String transferId;
+            }
+            TransferIdCapture capture = new TransferIdCapture();
+            
             StreamingResponseBody streamingResponseBody = outputStream -> {
                 try {
-                    String transferId = sftpService.downloadFileWithProgress(sessionId, path, outputStream);
-                    log.info("Download started with transfer ID: {}", transferId);
+                    capture.transferId = sftpService.downloadFileWithProgress(sessionId, path, outputStream);
                 } catch (Exception e) {
                     log.error("Error during file download: {}", e.getMessage());
                     throw new RuntimeException("Download failed", e);
                 }
             };
 
-            return ResponseEntity.ok()
+            ResponseEntity.BodyBuilder responseBuilder = ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION, 
                             "attachment; filename=\"" + URLEncoder.encode(fileName, StandardCharsets.UTF_8) + "\"")
-                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                    .body(streamingResponseBody);
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM);
+            
+            // Add transfer ID header if available
+            if (capture.transferId != null) {
+                responseBuilder.header("X-Transfer-Id", capture.transferId);
+            }
+            
+            return responseBuilder.body(streamingResponseBody);
                     
         } catch (Exception e) {
             log.error("Failed to download file {} for profile {}: {}", path, profileId, e.getMessage());
-            return ResponseEntity.badRequest()
-                    .body(SFTPResponse.error("Failed to download file: " + e.getMessage()));
+            throw new RuntimeException("Failed to download file: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Prepare upload: generate transferId and start progress tracking
+     */
+    @PostMapping("/{profileId}/prepare-upload")
+    public ResponseEntity<SFTPResponse<Map<String, String>>> prepareUpload(
+            @PathVariable Long profileId,
+            @RequestParam String path,
+            @RequestParam String fileName,
+            @RequestParam long totalBytes) {
+        try {
+            String transferId = java.util.UUID.randomUUID().toString();
+            progressTracker.startTransfer(transferId, fileName, "UPLOAD", totalBytes);
+            Map<String, String> result = Map.of(
+                "transferId", transferId
+            );
+            return ResponseEntity.ok(SFTPResponse.success("Prepared upload", result));
+        } catch (Exception e) {
+            log.error("Error preparing upload: {}", e.getMessage());
+            return ResponseEntity.internalServerError()
+                    .body(SFTPResponse.error("Internal server error"));
         }
     }
 
@@ -112,7 +145,8 @@ public class SFTPController {
     public ResponseEntity<SFTPResponse<Map<String, String>>> uploadFile(
             @PathVariable Long profileId,
             @RequestParam String path,
-            @RequestParam("file") MultipartFile file) {
+            @RequestParam("file") MultipartFile file,
+            @RequestParam String transferId) {
         try {
             if (file.isEmpty()) {
                 return ResponseEntity.badRequest()
@@ -121,16 +155,15 @@ public class SFTPController {
 
             String sessionId = sftpService.connect(profileId);
             String remotePath = path.endsWith("/") ? path + file.getOriginalFilename() : path + "/" + file.getOriginalFilename();
-            
-            // Start upload with progress tracking
-            String transferId = sftpService.uploadFileWithProgress(sessionId, remotePath, file.getInputStream(), file.getSize());
-            
+            // Use the provided transferId for progress tracking
+            sftpService.uploadFileWithProgress(sessionId, remotePath, file.getInputStream(), file.getSize(), transferId);
+
             Map<String, String> result = Map.of(
                 "transferId", transferId,
                 "remotePath", remotePath,
                 "fileName", file.getOriginalFilename()
             );
-            
+
             return ResponseEntity.ok(SFTPResponse.success("File upload started", result));
         } catch (SftpException e) {
             log.error("Failed to upload file to {} for profile {}: {}", path, profileId, e.getMessage());

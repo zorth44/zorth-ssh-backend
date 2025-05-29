@@ -76,37 +76,46 @@ public class TransferProgressTracker {
     
     public void updateProgress(String transferId, long transferredBytes) {
         TransferProgress progress = activeTransfers.get(transferId);
-        if (progress == null) return;
+        if (progress == null) {
+            log.warn("No progress tracking found for transfer: {}", transferId);
+            return;
+        }
         
-        SpeedCalculator calculator = speedCalculators.get(transferId);
-        if (calculator != null) {
-            long speed = calculator.calculateSpeed(transferredBytes);
-            progress.setSpeedBytesPerSecond(speed);
-            progress.setSpeedFormatted(TransferProgress.formatSpeed(speed));
-            
-            // Calculate estimated remaining time
-            if (speed > 0 && progress.getTotalBytes() > transferredBytes) {
-                long remainingBytes = progress.getTotalBytes() - transferredBytes;
-                progress.setEstimatedRemainingSeconds(remainingBytes / speed);
+        synchronized (progress) {
+            SpeedCalculator calculator = speedCalculators.get(transferId);
+            if (calculator != null) {
+                long speed = calculator.calculateSpeed(transferredBytes);
+                progress.setSpeedBytesPerSecond(speed);
+                progress.setSpeedFormatted(TransferProgress.formatSpeed(speed));
+                
+                // Calculate estimated remaining time
+                if (speed > 0 && progress.getTotalBytes() > transferredBytes) {
+                    long remainingBytes = progress.getTotalBytes() - transferredBytes;
+                    progress.setEstimatedRemainingSeconds(remainingBytes / speed);
+                }
             }
-        }
-        
-        progress.updateProgress(transferredBytes);
-        progress.setStatus(TransferProgress.TransferStatus.IN_PROGRESS);
-        
-        // Send progress update every 1% or every 1MB, whichever is smaller
-        boolean shouldUpdate = false;
-        if (progress.getTotalBytes() > 0) {
-            double percentageChange = (double) transferredBytes / progress.getTotalBytes() * 100.0;
-            shouldUpdate = (percentageChange - progress.getPercentage()) >= 1.0;
-        }
-        
-        if (!shouldUpdate && transferredBytes - progress.getTransferredBytes() >= 1024 * 1024) { // 1MB
-            shouldUpdate = true;
-        }
-        
-        if (shouldUpdate) {
-            sendProgressUpdate(transferId);
+            
+            // Always update the progress
+            progress.updateProgress(transferredBytes);
+            progress.setStatus(TransferProgress.TransferStatus.IN_PROGRESS);
+            progress.setLastUpdate(LocalDateTime.now());
+            
+            // Send progress update more frequently
+            boolean shouldUpdate = false;
+            if (progress.getTotalBytes() > 0) {
+                double percentageChange = (double) transferredBytes / progress.getTotalBytes() * 100.0;
+                shouldUpdate = (percentageChange - progress.getPercentage()) >= 0.1; // Update every 0.1%
+            }
+            
+            if (!shouldUpdate && transferredBytes - progress.getTransferredBytes() >= 256 * 1024) { // 256KB
+                shouldUpdate = true;
+            }
+            
+            if (shouldUpdate) {
+                log.debug("Sending progress update for transfer {}: {}% ({} bytes)", 
+                    transferId, progress.getPercentage(), transferredBytes);
+                sendProgressUpdate(transferId);
+            }
         }
     }
     
@@ -154,8 +163,19 @@ public class TransferProgressTracker {
     private void sendProgressUpdate(String transferId) {
         TransferProgress progress = activeTransfers.get(transferId);
         if (progress != null) {
-            // Send to WebSocket topic for real-time updates
-            messagingTemplate.convertAndSend("/topic/transfer-progress/" + transferId, progress);
+            try {
+                // Send to WebSocket topic for real-time updates
+                String destination = "/topic/transfer-progress/" + transferId;
+                log.debug("Sending progress update to {}: {}", destination, progress);
+                
+                // Convert to JSON and log the actual message being sent
+                String jsonMessage = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(progress);
+                log.debug("Sending JSON message: {}", jsonMessage);
+                
+                messagingTemplate.convertAndSend(destination, progress);
+            } catch (Exception e) {
+                log.error("Error sending progress update for transfer {}: {}", transferId, e.getMessage(), e);
+            }
         }
     }
     
