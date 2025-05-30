@@ -55,13 +55,12 @@ public class SFTPService {
     
     /**
      * Downloads a file from the target server via SFTP and writes it to an output stream
-     * Returns the transfer ID for progress tracking
+     * Uses the provided transferId for progress tracking
      */
-    public String downloadFileWithProgress(String sessionId, String remotePath, OutputStream outputStream) 
+    public void downloadFileWithProgress(String sessionId, String remotePath, OutputStream outputStream, String transferId) 
             throws SftpException, IOException {
         ChannelSftp sftpChannel = sessionManager.getChannel(sessionId);
         String fileName = getFileName(remotePath);
-        String transferId = UUID.randomUUID().toString();
         
         try {
             // Get file size for progress tracking using stat instead of ls
@@ -73,8 +72,10 @@ public class SFTPService {
                 fileSize = -1; // Unknown size
             }
             
-            // Start progress tracking
-            progressTracker.startTransfer(transferId, fileName, "DOWNLOAD", fileSize);
+            // Only start progress tracking if not already started
+            if (progressTracker.getProgress(transferId) == null) {
+                progressTracker.startTransfer(transferId, fileName, "DOWNLOAD", fileSize);
+            }
             
             log.info("Downloading file: {} (size: {} bytes)", remotePath, fileSize);
             
@@ -94,8 +95,6 @@ public class SFTPService {
             progressTracker.completeTransfer(transferId);
             log.info("Successfully downloaded file: {}", remotePath);
             
-            return transferId;
-            
         } catch (Exception e) {
             progressTracker.failTransfer(transferId, e.getMessage());
             throw e;
@@ -103,11 +102,13 @@ public class SFTPService {
     }
     
     /**
-     * Legacy method for backward compatibility
+     * Legacy method that generates its own transferId
      */
-    public void downloadFile(String sessionId, String remotePath, OutputStream outputStream) 
+    public String downloadFileWithProgress(String sessionId, String remotePath, OutputStream outputStream) 
             throws SftpException, IOException {
-        downloadFileWithProgress(sessionId, remotePath, outputStream);
+        String transferId = UUID.randomUUID().toString();
+        downloadFileWithProgress(sessionId, remotePath, outputStream, transferId);
+        return transferId;
     }
     
     /**
@@ -118,11 +119,19 @@ public class SFTPService {
             throws SftpException {
         ChannelSftp sftpChannel = sessionManager.getChannel(sessionId);
         String fileName = getFileName(remotePath);
-        try {
-            // Start progress tracking (should already be started by prepare-upload, but safe to call)
+        
+        log.info("uploadFileWithProgress called with transferId: {} (is null: {})", transferId, transferId == null);
+        
+        // Generate transferId if not provided (for legacy calls)
+        if (transferId == null) {
+            transferId = UUID.randomUUID().toString();
+            log.info("Generated new transferId for legacy call: {}", transferId);
+            // Only start progress tracking for legacy calls where controller didn't start it
             progressTracker.startTransfer(transferId, fileName, "UPLOAD", fileSize);
-
-            log.info("Uploading file to: {} (size: {} bytes)", remotePath, fileSize);
+        }
+        
+        try {
+            log.info("Uploading file to: {} (size: {} bytes) with transferId: {}", remotePath, fileSize, transferId);
 
             // Wrap input stream with progress tracking
             ProgressTrackingInputStream progressInputStream =
@@ -131,7 +140,7 @@ public class SFTPService {
             sftpChannel.put(progressInputStream, remotePath);
 
             progressTracker.completeTransfer(transferId);
-            log.info("Successfully uploaded file to: {}", remotePath);
+            log.info("Successfully uploaded file to: {} with transferId: {}", remotePath, transferId);
 
         } catch (Exception e) {
             progressTracker.failTransfer(transferId, e.getMessage());
@@ -144,8 +153,9 @@ public class SFTPService {
      */
     public void uploadFile(String sessionId, String remotePath, InputStream inputStream) 
             throws SftpException {
-        // For legacy calls, we don't have file size info, so we'll use -1
-        uploadFileWithProgress(sessionId, remotePath, inputStream, -1, null);
+        // For legacy calls, generate a transferId and proceed normally
+        String transferId = UUID.randomUUID().toString();
+        uploadFileWithProgress(sessionId, remotePath, inputStream, -1, transferId);
     }
     
     /**

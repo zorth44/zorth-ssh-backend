@@ -2,11 +2,13 @@ package com.zorth.ssh.controller;
 
 import com.jcraft.jsch.JSchException;
 import com.jcraft.jsch.SftpException;
+import com.jcraft.jsch.ChannelSftp;
 import com.zorth.ssh.dto.SFTPFileInfo;
 import com.zorth.ssh.dto.SFTPResponse;
 import com.zorth.ssh.dto.TransferProgress;
 import com.zorth.ssh.service.SFTPService;
 import com.zorth.ssh.service.TransferProgressTracker;
+import com.zorth.ssh.service.SFTPSessionManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
@@ -29,6 +31,7 @@ public class SFTPController {
 
     private final SFTPService sftpService;
     private final TransferProgressTracker progressTracker;
+    private final SFTPSessionManager sessionManager;
 
     /**
      * Establish SFTP connection
@@ -77,20 +80,41 @@ public class SFTPController {
     @GetMapping("/{profileId}/download")
     public ResponseEntity<StreamingResponseBody> downloadFile(
             @PathVariable Long profileId,
-            @RequestParam String path) {
+            @RequestParam String path,
+            @RequestParam(required = false) String transferId) {
         try {
             String sessionId = sftpService.connect(profileId);
             String fileName = path.substring(path.lastIndexOf('/') + 1);
             
-            // Create a wrapper for the output stream to capture the transfer ID
-            class TransferIdCapture {
-                String transferId;
+            // Generate transferId if not provided (for backward compatibility)
+            final String finalTransferId = transferId != null ? transferId : java.util.UUID.randomUUID().toString();
+            
+            // Start progress tracking if transferId was provided
+            if (transferId != null) {
+                try {
+                    // Get file size for progress tracking
+                    ChannelSftp sftpChannel = sessionManager.getChannel(sessionId);
+                    long fileSize;
+                    try {
+                        fileSize = sftpChannel.stat(path).getSize();
+                    } catch (Exception e) {
+                        fileSize = -1; // Unknown size
+                    }
+                    progressTracker.startTransfer(finalTransferId, fileName, "DOWNLOAD", fileSize);
+                } catch (Exception e) {
+                    log.warn("Could not start progress tracking for download: {}", e.getMessage());
+                }
             }
-            TransferIdCapture capture = new TransferIdCapture();
             
             StreamingResponseBody streamingResponseBody = outputStream -> {
                 try {
-                    capture.transferId = sftpService.downloadFileWithProgress(sessionId, path, outputStream);
+                    if (transferId != null) {
+                        // Use the provided transferId
+                        sftpService.downloadFileWithProgress(sessionId, path, outputStream, finalTransferId);
+                    } else {
+                        // Legacy path - generate transferId internally
+                        sftpService.downloadFileWithProgress(sessionId, path, outputStream);
+                    }
                 } catch (Exception e) {
                     log.error("Error during file download: {}", e.getMessage());
                     throw new RuntimeException("Download failed", e);
@@ -102,39 +126,14 @@ public class SFTPController {
                             "attachment; filename=\"" + URLEncoder.encode(fileName, StandardCharsets.UTF_8) + "\"")
                     .contentType(MediaType.APPLICATION_OCTET_STREAM);
             
-            // Add transfer ID header if available
-            if (capture.transferId != null) {
-                responseBuilder.header("X-Transfer-Id", capture.transferId);
-            }
+            // Add transfer ID header
+            responseBuilder.header("X-Transfer-Id", finalTransferId);
             
             return responseBuilder.body(streamingResponseBody);
                     
         } catch (Exception e) {
             log.error("Failed to download file {} for profile {}: {}", path, profileId, e.getMessage());
             throw new RuntimeException("Failed to download file: " + e.getMessage());
-        }
-    }
-
-    /**
-     * Prepare upload: generate transferId and start progress tracking
-     */
-    @PostMapping("/{profileId}/prepare-upload")
-    public ResponseEntity<SFTPResponse<Map<String, String>>> prepareUpload(
-            @PathVariable Long profileId,
-            @RequestParam String path,
-            @RequestParam String fileName,
-            @RequestParam long totalBytes) {
-        try {
-            String transferId = java.util.UUID.randomUUID().toString();
-            progressTracker.startTransfer(transferId, fileName, "UPLOAD", totalBytes);
-            Map<String, String> result = Map.of(
-                "transferId", transferId
-            );
-            return ResponseEntity.ok(SFTPResponse.success("Prepared upload", result));
-        } catch (Exception e) {
-            log.error("Error preparing upload: {}", e.getMessage());
-            return ResponseEntity.internalServerError()
-                    .body(SFTPResponse.error("Internal server error"));
         }
     }
 
@@ -146,16 +145,27 @@ public class SFTPController {
             @PathVariable Long profileId,
             @RequestParam String path,
             @RequestParam("file") MultipartFile file,
-            @RequestParam String transferId) {
+            @RequestParam String transferId,
+            @RequestParam String fileName,
+            @RequestParam long totalBytes) {
         try {
+            log.info("Upload request received - transferId from frontend: {}, fileName: {}, totalBytes: {}", 
+                    transferId, fileName, totalBytes);
+            
             if (file.isEmpty()) {
                 return ResponseEntity.badRequest()
                         .body(SFTPResponse.error("File is empty"));
             }
 
+            // Start progress tracking with provided transferId from frontend
+            progressTracker.startTransfer(transferId, fileName, "UPLOAD", totalBytes);
+            log.info("Started progress tracking for transferId: {}", transferId);
+
             String sessionId = sftpService.connect(profileId);
             String remotePath = path.endsWith("/") ? path + file.getOriginalFilename() : path + "/" + file.getOriginalFilename();
+            
             // Use the provided transferId for progress tracking
+            log.info("Calling uploadFileWithProgress with transferId: {}", transferId);
             sftpService.uploadFileWithProgress(sessionId, remotePath, file.getInputStream(), file.getSize(), transferId);
 
             Map<String, String> result = Map.of(
@@ -166,10 +176,12 @@ public class SFTPController {
 
             return ResponseEntity.ok(SFTPResponse.success("File upload started", result));
         } catch (SftpException e) {
+            progressTracker.failTransfer(transferId, e.getMessage());
             log.error("Failed to upload file to {} for profile {}: {}", path, profileId, e.getMessage());
             return ResponseEntity.badRequest()
                     .body(SFTPResponse.error("Failed to upload file: " + e.getMessage()));
         } catch (Exception e) {
+            progressTracker.failTransfer(transferId, e.getMessage());
             log.error("Unexpected error uploading file for profile {}: {}", profileId, e.getMessage());
             return ResponseEntity.internalServerError()
                     .body(SFTPResponse.error("Internal server error"));

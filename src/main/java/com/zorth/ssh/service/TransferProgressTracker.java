@@ -1,5 +1,6 @@
 package com.zorth.ssh.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zorth.ssh.dto.TransferProgress;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -15,11 +16,13 @@ import java.util.concurrent.ConcurrentMap;
 public class TransferProgressTracker {
     
     private final SimpMessagingTemplate messagingTemplate;
+    private final ObjectMapper objectMapper;
     private final ConcurrentMap<String, TransferProgress> activeTransfers = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, SpeedCalculator> speedCalculators = new ConcurrentHashMap<>();
     
-    public TransferProgressTracker(SimpMessagingTemplate messagingTemplate) {
+    public TransferProgressTracker(SimpMessagingTemplate messagingTemplate, ObjectMapper objectMapper) {
         this.messagingTemplate = messagingTemplate;
+        this.objectMapper = objectMapper;
     }
     
     public static class SpeedCalculator {
@@ -169,7 +172,7 @@ public class TransferProgressTracker {
                 log.debug("Sending progress update to {}: {}", destination, progress);
                 
                 // Convert to JSON and log the actual message being sent
-                String jsonMessage = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(progress);
+                String jsonMessage = objectMapper.writeValueAsString(progress);
                 log.debug("Sending JSON message: {}", jsonMessage);
                 
                 messagingTemplate.convertAndSend(destination, progress);
