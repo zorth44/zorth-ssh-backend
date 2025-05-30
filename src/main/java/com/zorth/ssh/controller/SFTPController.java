@@ -75,61 +75,31 @@ public class SFTPController {
     }
 
     /**
-     * Download a file from the remote server with progress tracking
+     * Download a file from the remote server
      */
     @GetMapping("/{profileId}/download")
     public ResponseEntity<StreamingResponseBody> downloadFile(
             @PathVariable Long profileId,
-            @RequestParam String path,
-            @RequestParam(required = false) String transferId) {
+            @RequestParam String path) {
         try {
             String sessionId = sftpService.connect(profileId);
             String fileName = path.substring(path.lastIndexOf('/') + 1);
             
-            // Generate transferId if not provided (for backward compatibility)
-            final String finalTransferId = transferId != null ? transferId : java.util.UUID.randomUUID().toString();
-            
-            // Start progress tracking if transferId was provided
-            if (transferId != null) {
-                try {
-                    // Get file size for progress tracking
-                    ChannelSftp sftpChannel = sessionManager.getChannel(sessionId);
-                    long fileSize;
-                    try {
-                        fileSize = sftpChannel.stat(path).getSize();
-                    } catch (Exception e) {
-                        fileSize = -1; // Unknown size
-                    }
-                    progressTracker.startTransfer(finalTransferId, fileName, "DOWNLOAD", fileSize);
-                } catch (Exception e) {
-                    log.warn("Could not start progress tracking for download: {}", e.getMessage());
-                }
-            }
-            
             StreamingResponseBody streamingResponseBody = outputStream -> {
                 try {
-                    if (transferId != null) {
-                        // Use the provided transferId
-                        sftpService.downloadFileWithProgress(sessionId, path, outputStream, finalTransferId);
-                    } else {
-                        // Legacy path - generate transferId internally
-                        sftpService.downloadFileWithProgress(sessionId, path, outputStream);
-                    }
+                    // Use simple download without progress tracking for browser downloads
+                    sftpService.downloadFile(sessionId, path, outputStream);
                 } catch (Exception e) {
                     log.error("Error during file download: {}", e.getMessage());
                     throw new RuntimeException("Download failed", e);
                 }
             };
 
-            ResponseEntity.BodyBuilder responseBuilder = ResponseEntity.ok()
+            return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION, 
                             "attachment; filename=\"" + URLEncoder.encode(fileName, StandardCharsets.UTF_8) + "\"")
-                    .contentType(MediaType.APPLICATION_OCTET_STREAM);
-            
-            // Add transfer ID header
-            responseBuilder.header("X-Transfer-Id", finalTransferId);
-            
-            return responseBuilder.body(streamingResponseBody);
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .body(streamingResponseBody);
                     
         } catch (Exception e) {
             log.error("Failed to download file {} for profile {}: {}", path, profileId, e.getMessage());

@@ -55,6 +55,28 @@ public class SFTPService {
     
     /**
      * Downloads a file from the target server via SFTP and writes it to an output stream
+     * Simple version without progress tracking for browser downloads
+     */
+    public void downloadFile(String sessionId, String remotePath, OutputStream outputStream) 
+            throws SftpException, IOException {
+        ChannelSftp sftpChannel = sessionManager.getChannel(sessionId);
+        
+        log.info("Downloading file: {}", remotePath);
+        
+        try (InputStream inputStream = sftpChannel.get(remotePath)) {
+            byte[] buffer = new byte[8192];
+            int bytesRead;
+            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                outputStream.write(buffer, 0, bytesRead);
+            }
+            outputStream.flush();
+        }
+        
+        log.info("Successfully downloaded file: {}", remotePath);
+    }
+    
+    /**
+     * Downloads a file from the target server via SFTP and writes it to an output stream
      * Uses the provided transferId for progress tracking
      */
     public void downloadFileWithProgress(String sessionId, String remotePath, OutputStream outputStream, String transferId) 
